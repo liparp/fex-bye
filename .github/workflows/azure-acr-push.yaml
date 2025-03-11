@@ -25,10 +25,20 @@ jobs:
       - name: Build with Maven
         run: mvn clean package -DskipTests
 
+      # Create and use a new builder that properly supports caching
       - name: Set up Docker Buildx
+        id: buildx
         uses: docker/setup-buildx-action@v3
         with:
-          driver: docker-container
+          install: true
+          use: true
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      # Explicitly list builders to verify
+      - name: List builders
+        run: docker buildx ls
 
       - name: Login to Azure Container Registry
         uses: azure/docker-login@v1
@@ -37,17 +47,29 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
+      # Build without push first to test if the image builds correctly
+      - name: Test Image Build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: ${{ secrets.ACR_LOGIN_SERVER }}/my-app:test
+          platforms: linux/amd64
+          load: true
+
+      # Then build with all options and push
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           tags: |
             ${{ secrets.ACR_LOGIN_SERVER }}/my-app:latest
             ${{ secrets.ACR_LOGIN_SERVER }}/my-app:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Comment out cache options until the builder is confirmed working
+          # cache-from: type=gha
+          # cache-to: type=gha,mode=max
 
       - name: Smoke Test - Verify Image Name
         run: |
@@ -57,7 +79,12 @@ jobs:
           # Pull the image
           docker pull $IMAGE_REF
           
+          # Show image details
+          echo "Image details:"
+          docker inspect $IMAGE_REF
+          
           # Run the container with a simple command to verify it starts
+          echo "Running smoke test container..."
           CONTAINER_ID=$(docker run -d $IMAGE_REF sh -c "echo 'Image name test'")
           
           # Check if container started successfully
@@ -65,6 +92,10 @@ jobs:
             echo "Failed to start container for smoke test"
             exit 1
           fi
+          
+          # Get logs
+          echo "Container logs:"
+          docker logs $CONTAINER_ID
           
           # Wait for container to complete
           docker wait $CONTAINER_ID
